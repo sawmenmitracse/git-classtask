@@ -1,57 +1,62 @@
 <?php
-require_once 'db.php';
+require_once __DIR__ . '/../bootstrap.php';
 
-header('Content-Type: application/json');
+require_post_method();
 
-$data = json_decode(file_get_contents("php://input"), true);
-$email = $data['email'] ?? '';
+$data = get_request_data();
+$email = trim($data['email'] ?? '');
 $password = $data['password'] ?? '';
-$csrf_token = $data['csrf_token'] ?? '';
+$csrfToken = $data['csrf_token'] ?? '';
 
-$response = [];
-
-if (empty($email) || empty($password) || empty($csrf_token)) {
-    error_log("login.php: Missing fields - email=" . ($email ? 'provided' : 'missing') . ", password=" . ($password ? 'provided' : 'missing') . ", csrf_token=" . ($csrf_token ? 'provided' : 'missing'));
-    $response = ["success" => false, "message" => "All fields are required"];
-    echo json_encode($response);
-    exit;
+if ($email === '' || $password === '' || $csrfToken === '') {
+    send_json([
+        'success' => false,
+        'message' => 'All fields are required'
+    ], 422);
 }
 
-if ($csrf_token !== ($_SESSION['csrf_token'] ?? '')) {
-    error_log("login.php: Invalid CSRF token, received=$csrf_token, expected=" . ($_SESSION['csrf_token'] ?? 'not set'));
-    $response = ["success" => false, "message" => "Invalid CSRF token"];
-    echo json_encode($response);
-    exit;
-}
+validate_csrf_token($csrfToken);
 
 $conn = getDbConnection();
-$stmt = $conn->prepare("SELECT id, name, password FROM parents WHERE email = ?");
-$stmt->bind_param("s", $email);
+$stmt = $conn->prepare('SELECT id, name, password FROM parents WHERE email = ?');
+$stmt->bind_param('s', $email);
 $stmt->execute();
 $result = $stmt->get_result();
 
-if ($result->num_rows > 0) {
-    $row = $result->fetch_assoc();
-    if (password_verify($password, $row['password'])) {
-        $existing_csrf_token = $_SESSION['csrf_token'] ?? '';
-        session_regenerate_id(true);
-        $_SESSION['parent_id'] = $row['id'];
-        $_SESSION['parent_name'] = $row['name'];
-        if ($existing_csrf_token) {
-            $_SESSION['csrf_token'] = $existing_csrf_token;
-        }
-        error_log("login.php: Login successful for parent_id={$row['id']}, session_id=" . session_id());
-        $response = ["success" => true, "name" => $row['name'], "id" => $row['id']];
-    } else {
-        error_log("login.php: Invalid password for email=$email");
-        $response = ["success" => false, "message" => "Invalid password"];
-    }
-} else {
-    error_log("login.php: User not found for email=$email");
-    $response = ["success" => false, "message" => "User not found"];
+if ($result->num_rows === 0) {
+    $stmt->close();
+    $conn->close();
+    send_json([
+        'success' => false,
+        'message' => 'User not found'
+    ], 404);
+}
+
+$parent = $result->fetch_assoc();
+
+if (!password_verify($password, $parent['password'])) {
+    $stmt->close();
+    $conn->close();
+    send_json([
+        'success' => false,
+        'message' => 'Invalid password'
+    ], 401);
+}
+
+$existingCsrfToken = $_SESSION['csrf_token'] ?? '';
+session_regenerate_id(true);
+$_SESSION['parent_id'] = (int) $parent['id'];
+$_SESSION['parent_name'] = $parent['name'];
+if ($existingCsrfToken !== '') {
+    $_SESSION['csrf_token'] = $existingCsrfToken;
 }
 
 $stmt->close();
 $conn->close();
-echo json_encode($response);
+
+send_json([
+    'success' => true,
+    'id' => (int) $parent['id'],
+    'name' => $parent['name']
+]);
 ?>
